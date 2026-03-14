@@ -14,12 +14,20 @@ class GameServer implements MessageComponentInterface {
     protected $currentPlayerIndex = 0;
     protected $correctCombination = [];
     protected $gameStarted = false;
+    protected $difficulty = 3; // По умолчанию 3 цифры
+    protected $minPlayers = 2;
+    protected $gameSize = 3; // По умолчанию 3x3
 
-    public function __construct() {
+    public function __construct($difficulty) {
         $this->clients = new \SplObjectStorage;
-        echo "\n========================================";
+        $this->difficulty = (int)$difficulty;
+        $this->gameSize = $this->difficulty; // Размер поля = сложность (количество цифр)
+        
+        echo "\n================================================";
         echo "\n   GAME SERVER STARTED ON PORT 8190";
-        echo "\n========================================\n";
+        echo "\n   DIFFICULTY: {$this->difficulty} digits";
+        echo "\n   GAME SIZE: {$this->gameSize}x{$this->gameSize}";
+        echo "\n================================================\n";
     }
 
     public function onOpen(ConnectionInterface $conn) {
@@ -30,7 +38,14 @@ class GameServer implements MessageComponentInterface {
             'combination' => [],
         ];
         echo "[CONNECT] New player connected. ID: {$conn->resourceId}\n";
-        $conn->send(json_encode(['type' => 'connected', 'id' => $conn->resourceId]));
+        
+        // Отправляем клиенту информацию о сложности
+        $conn->send(json_encode([
+            'type' => 'connected', 
+            'id' => $conn->resourceId,
+            'difficulty' => $this->difficulty,
+            'gameSize' => $this->gameSize
+        ]));
     }
 
     public function onMessage(ConnectionInterface $from, $msg) {
@@ -45,7 +60,7 @@ class GameServer implements MessageComponentInterface {
                 $readyCount = count(array_filter($this->players, fn($p) => $p['ready']));
                 echo "[READY] Player {$rid} is ready. Total ready: {$readyCount}/" . count($this->players) . "\n";
 
-                if ($this->allPlayersReady() && count($this->players) >= 2) {
+                if ($this->allPlayersReady() && count($this->players) >= $this->minPlayers) {
                     $this->startGame();
                 }
             }
@@ -89,7 +104,7 @@ class GameServer implements MessageComponentInterface {
         $this->clients->detach($conn);
         echo "[DISCONNECT] Player {$conn->resourceId} left the game.\n";
         unset($this->players[$conn->resourceId]);
-        if (count($this->players) < 2 && $this->gameStarted) {
+        if (count($this->players) < $this->minPlayers && $this->gameStarted) {
             echo "[INFO] Game stopped: not enough players.\n";
             $this->gameStarted = false;
         }
@@ -109,15 +124,20 @@ class GameServer implements MessageComponentInterface {
     private function startGame() {
         echo "\n----------------------------------------";
         echo "\n   STARTING NEW GAME SESSION";
-        $this->correctCombination = range(0, 8);
+        echo "\n   DIFFICULTY: {$this->difficulty} digits";
+        
+        // Создаем правильную комбинацию от 0 до difficulty-1
+        $this->correctCombination = range(0, $this->difficulty - 1);
         shuffle($this->correctCombination);
         
         echo "\n   TARGET GOAL: [" . implode(",", $this->correctCombination) . "]";
         echo "\n----------------------------------------\n";
         
         foreach ($this->players as $id => &$p) {
-            $c = range(0, 8);
-            do { shuffle($c); } while ($c === $this->correctCombination);
+            $c = range(0, $this->difficulty - 1);
+            do { 
+                shuffle($c); 
+            } while ($c === $this->correctCombination);
             $p['combination'] = $c;
             echo "   Player {$id} starts with: [" . implode(",", $p['combination']) . "]\n";
         }
@@ -128,7 +148,9 @@ class GameServer implements MessageComponentInterface {
         $this->broadcast([
             'type' => 'start',
             'current_player' => array_keys($this->players)[0],
-            'players' => $this->players
+            'players' => $this->players,
+            'difficulty' => $this->difficulty,
+            'gameSize' => $this->gameSize
         ]);
         echo "   Current turn: Player " . array_keys($this->players)[0] . "\n";
     }
@@ -140,7 +162,8 @@ class GameServer implements MessageComponentInterface {
         $this->broadcast([
             'type' => 'turn',
             'player' => $nextId,
-            'players' => $this->players
+            'players' => $this->players,
+            'difficulty' => $this->difficulty
         ]);
         echo "   Next turn: Player {$nextId}\n";
     }
@@ -151,7 +174,29 @@ class GameServer implements MessageComponentInterface {
     }
 }
 
+// Запрашиваем сложность при запуске
+echo "========================================\n";
+echo "   GAME SERVER SETUP\n";
+echo "========================================\n";
+echo "Enter difficulty (3-9 digits): ";
+$handle = fopen("php://stdin", "r");
+$difficulty = trim(fgets($handle));
+
+// Валидация ввода
+if (!is_numeric($difficulty) || $difficulty < 3 || $difficulty > 9) {
+    echo "Invalid difficulty. Using default value: 3\n";
+    $difficulty = 3;
+}
+
 $loop = React\EventLoop\Loop::get();
 $socket = new SocketServer('127.0.0.1:8190', [], $loop);
-$server = new IoServer(new HttpServer(new WsServer(new GameServer())), $socket, $loop);
+$server = new IoServer(
+    new HttpServer(
+        new WsServer(
+            new GameServer($difficulty)
+        )
+    ), 
+    $socket, 
+    $loop
+);
 $server->run();
